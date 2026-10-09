@@ -13,11 +13,13 @@ import java.util.function.Consumer;
 
 import com.vucelich.playertrades.PlayerTrades;
 import com.vucelich.playertrades.config.DiscordSettings;
+import com.vucelich.playertrades.discord.BackgroundConnect;
 import com.vucelich.playertrades.discord.DiscordBridge;
 import com.vucelich.playertrades.discord.DiscordInbox;
 import com.vucelich.playertrades.discord.InboundDispatch;
 import com.vucelich.playertrades.discord.OfferMessages;
 import com.vucelich.playertrades.discord.OfferNotice;
+import com.vucelich.playertrades.discord.OfferRetention;
 import com.vucelich.playertrades.discord.RelayPolicy;
 import com.vucelich.playertrades.discord.TokenRedaction;
 
@@ -54,6 +56,8 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 	private final Set<UUID> openingThreads = ConcurrentHashMap.newKeySet();
 	private final Object relayLock = new Object();
 	private final AtomicBoolean channelWarned = new AtomicBoolean();
+	private final AtomicBoolean stopped = new AtomicBoolean();
+	private final AtomicBoolean failed = new AtomicBoolean();
 	private volatile JDA jda;
 
 	private JdaDiscordBridge(DiscordSettings settings, DiscordInbox inbox, Consumer<Runnable> serverThread) {
@@ -65,41 +69,72 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 
 	public static DiscordBridge connect(DiscordSettings settings, DiscordInbox inbox, Consumer<Runnable> serverThread) {
 		JdaDiscordBridge bridge = new JdaDiscordBridge(settings, inbox, serverThread);
+		ClassLoader loader = JdaDiscordBridge.class.getClassLoader();
+		BackgroundConnect.start(() -> {
+			Thread.currentThread().setContextClassLoader(loader);
+			bridge.login();
+		});
+		return bridge;
+	}
+
+	private void login() {
+		if (stopped.get()) {
+			return;
+		}
 		JDA api = null;
 		try {
 			api = JDABuilder.createLight(
-					settings.token(),
+					token,
 					EnumSet.of(GatewayIntent.GUILD_MESSAGES, GatewayIntent.MESSAGE_CONTENT))
-					.addEventListeners(bridge)
+					.addEventListeners(this)
 					.build();
-			bridge.jda = api;
-			if (!bridge.awaitConnected()) {
-				bridge.shutdown();
-				PlayerTrades.LOGGER.warn("Discord login failed. Trades continue in game.");
-				return new com.vucelich.playertrades.discord.NoOpDiscordBridge();
+			synchronized (this) {
+				if (stopped.get()) {
+					api.shutdown();
+					return;
+				}
+				this.jda = api;
 			}
-			bridge.warnIfChannelMissing();
+			if (!awaitConnected()) {
+				if (!stopped.get()) {
+					failed.set(true);
+					PlayerTrades.LOGGER.warn("Discord login failed. Trades continue in game.");
+				}
+				shutdown();
+				offers.clear();
+				return;
+			}
+			if (stopped.get()) {
+				return;
+			}
+			warnIfChannelMissing();
+			flushPending();
 			PlayerTrades.LOGGER.info("Discord bridge connected");
-			return bridge;
 		} catch (Throwable failure) {
+			failed.set(true);
 			try {
-				bridge.jda = api;
-				bridge.shutdown();
+				synchronized (this) {
+					if (this.jda == null) {
+						this.jda = api;
+					}
+				}
+				shutdown();
 			} catch (Throwable ignored) {
 				// A broken bot must not stop the Minecraft server.
 			}
-			PlayerTrades.LOGGER.warn("Discord login failed: {}", TokenRedaction.redact(String.valueOf(failure.getMessage()), settings.token()));
-			return new com.vucelich.playertrades.discord.NoOpDiscordBridge();
+			offers.clear();
+			PlayerTrades.LOGGER.warn("Discord login failed: {}", TokenRedaction.redact(String.valueOf(failure.getMessage()), token));
 		}
 	}
 
 	@Override
 	public void postOffer(UUID playerId, String playerName, String offerText) {
-		if (playerId == null) {
+		if (playerId == null || closed()) {
 			return;
 		}
-		TrackedOffer offer = offers.computeIfAbsent(playerId, ignored -> new TrackedOffer());
+		TrackedOffer offer = offers.computeIfAbsent(playerId, TrackedOffer::new);
 		synchronized (offer) {
+			offer.notice = null;
 			// A message can start only one thread. After a trade, post a fresh message
 			// so the next negotiation is not stuck on the previous thread.
 			if (offer.threaded) {
@@ -115,18 +150,23 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 
 	@Override
 	public void updateOffer(UUID playerId, String playerName, OfferNotice notice) {
-		if (playerId == null || notice == null) {
+		if (playerId == null || notice == null || closed()) {
 			return;
 		}
-		publish(playerId, OfferMessages.closed(playerName, notice));
+		TrackedOffer offer = offers.computeIfAbsent(playerId, TrackedOffer::new);
+		synchronized (offer) {
+			offer.notice = notice;
+			offer.desired = OfferMessages.closed(playerName, notice);
+			flush(offer);
+		}
 	}
 
 	@Override
 	public void openThread(UUID sessionId, UUID offererId, String nameA, String nameB) {
-		if (sessionId == null || offererId == null || threads.containsKey(sessionId)) {
+		if (sessionId == null || offererId == null || closed() || threads.containsKey(sessionId)) {
 			return;
 		}
-		TrackedOffer offer = offers.computeIfAbsent(offererId, ignored -> new TrackedOffer());
+		TrackedOffer offer = offers.computeIfAbsent(offererId, TrackedOffer::new);
 		synchronized (offer) {
 			if (threads.containsKey(sessionId) || openingThreads.contains(sessionId) || sessionId.equals(offer.pendingSession)) {
 				return;
@@ -142,7 +182,7 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 
 	@Override
 	public void relayFromGame(UUID sessionId, String speaker, String text) {
-		if (sessionId == null || !RelayPolicy.fromDiscord(text)) {
+		if (sessionId == null || closed() || !RelayPolicy.fromDiscord(text)) {
 			return;
 		}
 		String line = OfferMessages.relay(speaker, text);
@@ -186,6 +226,7 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 
 	@Override
 	public void shutdown() {
+		stopped.set(true);
 		JDA current;
 		synchronized (this) {
 			current = this.jda;
@@ -206,23 +247,35 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 		}
 	}
 
-	private void publish(UUID playerId, String body) {
-		TrackedOffer offer = offers.computeIfAbsent(playerId, ignored -> new TrackedOffer());
-		synchronized (offer) {
-			offer.desired = body;
-			flush(offer);
+	private void flushPending() {
+		for (TrackedOffer offer : List.copyOf(offers.values())) {
+			synchronized (offer) {
+				flush(offer);
+			}
 		}
 	}
 
 	private void flush(TrackedOffer offer) {
 		GuildMessageChannel channel = tradesChannel();
 		if (channel == null || offer.desired == null || offer.desired.equals(offer.sent)) {
+			if (channel != null || offer.messageId == null) {
+				prune(offer);
+			}
 			return;
 		}
 		String body = offer.desired;
 		if (offer.messageId != null) {
 			offer.sent = body;
-			channel.editMessageById(offer.messageId, body).setAllowedMentions(NO_PINGS).queue(ignored -> {}, this::logFailure);
+			channel.editMessageById(offer.messageId, body).setAllowedMentions(NO_PINGS).queue(ignored -> {
+				synchronized (offer) {
+					prune(offer);
+				}
+			}, failure -> {
+				logFailure(failure);
+				synchronized (offer) {
+					prune(offer);
+				}
+			});
 			return;
 		}
 		if (offer.sending) {
@@ -240,13 +293,21 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 				if (offer.pendingSession != null) {
 					spawnThread(offer);
 				}
+				prune(offer);
 			}
 		}, failure -> {
 			synchronized (offer) {
 				offer.sending = false;
+				prune(offer);
 			}
 			logFailure(failure);
 		});
+	}
+
+	private void prune(TrackedOffer offer) {
+		if (OfferRetention.drop(offer.notice) && offer.pendingSession == null && !offer.sending) {
+			offers.remove(offer.playerId, offer);
+		}
 	}
 
 	private void spawnThread(TrackedOffer offer) {
@@ -257,12 +318,14 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 		}
 		if (!openingThreads.add(sessionId)) {
 			offer.pendingSession = null;
+			prune(offer);
 			return;
 		}
 		offer.pendingSession = null;
 		GuildMessageChannel channel = tradesChannel();
 		if (!(channel instanceof IThreadContainer container)) {
 			warnChannel();
+			prune(offer);
 			return;
 		}
 		String nameA = offer.pendingNameA;
@@ -273,6 +336,7 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 				if (boundMessage.equals(offer.messageId)) {
 					offer.threaded = true;
 				}
+				prune(offer);
 			}
 			List<String> queued;
 			synchronized (relayLock) {
@@ -286,7 +350,12 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 			for (String line : queued) {
 				send(thread, line);
 			}
-		}, this::logFailure);
+		}, failure -> {
+			logFailure(failure);
+			synchronized (offer) {
+				prune(offer);
+			}
+		});
 	}
 
 	private void send(ThreadChannel thread, String line) {
@@ -327,12 +396,15 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 	}
 
 	private boolean awaitConnected() throws InterruptedException {
-		JDA api = this.jda;
-		if (api == null) {
-			return false;
-		}
 		long deadline = System.nanoTime() + LOGIN_WAIT.toNanos();
 		while (System.nanoTime() < deadline) {
+			if (stopped.get()) {
+				return false;
+			}
+			JDA api = this.jda;
+			if (api == null) {
+				return false;
+			}
 			JDA.Status status = api.getStatus();
 			if (status == JDA.Status.CONNECTED) {
 				return true;
@@ -342,7 +414,12 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 			}
 			Thread.sleep(100L);
 		}
-		return api.getStatus() == JDA.Status.CONNECTED;
+		JDA api = this.jda;
+		return api != null && !stopped.get() && api.getStatus() == JDA.Status.CONNECTED;
+	}
+
+	private boolean closed() {
+		return stopped.get() || failed.get();
 	}
 
 	private boolean sameGuild(MessageReceivedEvent event) {
@@ -366,6 +443,7 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 	}
 
 	private static final class TrackedOffer {
+		private final UUID playerId;
 		private String messageId;
 		private boolean sending;
 		private String desired;
@@ -374,5 +452,10 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 		private String pendingNameA;
 		private String pendingNameB;
 		private boolean threaded;
+		private OfferNotice notice;
+
+		private TrackedOffer(UUID playerId) {
+			this.playerId = playerId;
+		}
 	}
 }
