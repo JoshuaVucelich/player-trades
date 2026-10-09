@@ -10,6 +10,7 @@
 	"contact": {},
 	"license": "MIT",
 	"environment": "server",
+	"accessWidener": "player_trades.accesswidener",
 	"entrypoints": {
 		"server": [
 			"com.vucelich.playertrades.fabric.PlayerTradesFabric"

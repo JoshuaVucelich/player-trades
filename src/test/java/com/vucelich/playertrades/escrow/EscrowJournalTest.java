@@ -32,6 +32,7 @@ class EscrowJournalTest {
 		assertEquals("INVENTORY", loaded.sides().get(0).lines().get(0).kind());
 		assertEquals(4, loaded.sides().get(0).lines().get(0).slot());
 		assertEquals("minecraft:diamond", loaded.sides().get(0).lines().get(0).codec().getAsJsonObject().get("id").getAsString());
+		assertEquals(UUID.fromString("00000000-0000-0000-0000-0000000000a1"), loaded.sides().get(0).lines().get(0).sequence());
 		assertEquals(1, EscrowJournal.readAll(directory).size());
 		assertEquals(2, loaded.sides().size());
 	}
@@ -44,16 +45,41 @@ class EscrowJournalTest {
 	}
 
 	@Test
-	void sourceSlotIsClearedOnlyAfterTheJournalWrite() {
+	void offerWritesTheJournalThenClearsThenSaves() {
 		List<String> events = new ArrayList<>();
-		EscrowTake.removeAfterJournal(() -> events.add("journal"), () -> events.add("clear"));
-		assertEquals(List.of("journal", "clear"), events);
+		EscrowTake.offer(() -> events.add("journal"), () -> events.add("clear"), () -> events.add("save"));
+		assertEquals(List.of("journal", "clear", "save"), events);
 		events.clear();
-		assertThrows(IllegalStateException.class, () -> EscrowTake.removeAfterJournal(() -> {
+		assertThrows(IllegalStateException.class, () -> EscrowTake.offer(() -> {
 			events.add("journal");
 			throw new IllegalStateException("disk");
-		}, () -> events.add("clear")));
+		}, () -> events.add("clear"), () -> events.add("save")));
 		assertEquals(List.of("journal"), events);
+		events.clear();
+		assertThrows(IllegalStateException.class, () -> EscrowTake.offer(() -> events.add("journal"), () -> {
+			events.add("clear");
+			throw new IllegalStateException("slot");
+		}, () -> events.add("save")));
+		assertEquals(List.of("journal", "clear"), events);
+	}
+
+	@Test
+	void settleMovesThenSavesThenRewritesTheJournal() {
+		List<String> events = new ArrayList<>();
+		EscrowTake.settle(() -> events.add("move"), () -> events.add("save"), () -> events.add("rewrite"));
+		assertEquals(List.of("move", "save", "rewrite"), events);
+		events.clear();
+		assertThrows(IllegalStateException.class, () -> EscrowTake.settle(() -> {
+			events.add("move");
+			throw new IllegalStateException("inventory");
+		}, () -> events.add("save"), () -> events.add("rewrite")));
+		assertEquals(List.of("move"), events);
+		events.clear();
+		assertThrows(IllegalStateException.class, () -> EscrowTake.settle(() -> events.add("move"), () -> {
+			events.add("save");
+			throw new IllegalStateException("disk");
+		}, () -> events.add("rewrite")));
+		assertEquals(List.of("move", "save"), events);
 	}
 
 	@Test
@@ -77,15 +103,17 @@ class EscrowJournalTest {
 	}
 
 	@Test
-	void aBrokenFileIsSkipped(@TempDir Path directory) throws Exception {
+	void aBrokenFileIsQuarantined(@TempDir Path directory) throws Exception {
 		Files.createDirectories(directory);
 		Files.writeString(directory.resolve(session + ".json"), "{not json");
 		assertTrue(EscrowJournal.readAll(directory).isEmpty());
+		assertFalse(Files.exists(EscrowJournal.file(directory, session)));
+		assertTrue(Files.isRegularFile(directory.resolve(EscrowJournal.QUARANTINE).resolve(session + ".json")));
 	}
 
 	private static EscrowJournal.Page page(UUID session, UUID alice, UUID bob) {
 		return new EscrowJournal.Page(session, List.of(
-				new EscrowJournal.Side(alice, List.of(new EscrowJournal.Line(JsonParser.parseString("{\"id\":\"minecraft:diamond\",\"count\":3}"), "INVENTORY", 4, -1))),
-				new EscrowJournal.Side(bob, List.of(new EscrowJournal.Line(JsonParser.parseString("{\"id\":\"minecraft:emerald\",\"count\":1}"), "ENDER", 2, -1)))));
+				new EscrowJournal.Side(alice, List.of(new EscrowJournal.Line(JsonParser.parseString("{\"id\":\"minecraft:diamond\",\"count\":3}"), "INVENTORY", 4, -1, UUID.fromString("00000000-0000-0000-0000-0000000000a1")))),
+				new EscrowJournal.Side(bob, List.of(new EscrowJournal.Line(JsonParser.parseString("{\"id\":\"minecraft:emerald\",\"count\":1}"), "ENDER", 2, -1, UUID.fromString("00000000-0000-0000-0000-0000000000b1"))))));
 	}
 }

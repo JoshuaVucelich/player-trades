@@ -1,6 +1,7 @@
 package com.vucelich.playertrades.escrow;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -23,9 +24,11 @@ import com.google.gson.JsonSyntaxException;
  * The file name is the session id, so a replay can return that session only once.
  */
 public final class EscrowJournal {
+	public static final String QUARANTINE = "quarantine";
+
 	private EscrowJournal() {}
 
-	public record Line(JsonElement codec, String kind, int slot, int inner) {}
+	public record Line(JsonElement codec, String kind, int slot, int inner, UUID sequence) {}
 
 	public record Side(UUID player, List<Line> lines) {
 		public Side {
@@ -65,6 +68,7 @@ public final class EscrowJournal {
 		} catch (AtomicMoveNotSupportedException unsupported) {
 			Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
 		}
+		syncDirectory(directory);
 	}
 
 	public static void delete(Path directory, UUID sessionId) throws IOException {
@@ -73,6 +77,7 @@ public final class EscrowJournal {
 		}
 		Files.deleteIfExists(file(directory, sessionId));
 		Files.deleteIfExists(directory.resolve(sessionId + ".json.tmp"));
+		syncDirectory(directory);
 	}
 
 	public static Optional<Page> read(Path file) {
@@ -101,10 +106,42 @@ public final class EscrowJournal {
 		}
 		try (DirectoryStream<Path> files = Files.newDirectoryStream(directory, "*.json")) {
 			for (Path file : files) {
-				read(file).ifPresent(pages::add);
+				if (QUARANTINE.equals(file.getFileName().toString())) {
+					continue;
+				}
+				Optional<Page> page = read(file);
+				if (page.isPresent()) {
+					pages.add(page.get());
+				} else {
+					quarantine(directory, file);
+				}
 			}
 		}
 		return pages;
+	}
+
+	public static void quarantine(Path directory, Path file) throws IOException {
+		if (directory == null || file == null || !Files.isRegularFile(file)) {
+			return;
+		}
+		Path quarantine = directory.resolve(QUARANTINE);
+		Files.createDirectories(quarantine);
+		Path target = quarantine.resolve(file.getFileName());
+		if (Files.exists(target)) {
+			target = quarantine.resolve(file.getFileName().toString() + "." + System.nanoTime());
+		}
+		Files.move(file, target, StandardCopyOption.REPLACE_EXISTING);
+		syncDirectory(quarantine);
+		syncDirectory(directory);
+	}
+
+	public static void syncDirectory(Path directory) throws IOException {
+		if (directory == null || !Files.isDirectory(directory)) {
+			return;
+		}
+		try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+			channel.force(true);
+		}
 	}
 
 	public static Path file(Path directory, UUID sessionId) {
@@ -128,6 +165,9 @@ public final class EscrowJournal {
 				lineJson.addProperty("kind", line.kind() == null ? ItemOrigin.Kind.INVENTORY.name() : line.kind());
 				lineJson.addProperty("slot", line.slot());
 				lineJson.addProperty("inner", line.inner());
+				if (line.sequence() != null) {
+					lineJson.addProperty("sequence", line.sequence().toString());
+				}
 				lines.add(lineJson);
 			}
 			sideJson.add("lines", lines);
@@ -157,7 +197,7 @@ public final class EscrowJournal {
 					}
 					JsonObject line = lineElement.getAsJsonObject();
 					JsonElement codec = line.has("codec") ? line.get("codec") : new JsonObject();
-					lines.add(new Line(codec, text(line, "kind"), integer(line, "slot"), integer(line, "inner")));
+					lines.add(new Line(codec, text(line, "kind"), integer(line, "slot"), integer(line, "inner"), uuid(text(line, "sequence"))));
 				}
 			}
 			if (!lines.isEmpty()) {

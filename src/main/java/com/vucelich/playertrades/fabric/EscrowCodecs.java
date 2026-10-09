@@ -33,7 +33,7 @@ public final class EscrowCodecs {
 				throw new IllegalStateException("Could not encode an escrowed stack");
 			}
 			ItemOrigin origin = entry.origin() == null ? ItemOrigin.inventory(0) : entry.origin();
-			lines.add(new EscrowJournal.Line(encoded.result().get(), origin.kind().name(), origin.slot(), origin.inner()));
+			lines.add(new EscrowJournal.Line(encoded.result().get(), origin.kind().name(), origin.slot(), origin.inner(), entry.sequence()));
 		}
 		return lines;
 	}
@@ -49,7 +49,7 @@ public final class EscrowCodecs {
 			if (stack.isEmpty()) {
 				throw new IllegalStateException("Could not decode an escrowed stack");
 			}
-			escrow.add(stack, origin(line));
+			escrow.add(stack, origin(line), line.sequence());
 		}
 		return escrow;
 	}

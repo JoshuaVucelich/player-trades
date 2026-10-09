@@ -6,6 +6,7 @@ import net.fabricmc.api.DedicatedServerModInitializer;
 public final class PlayerTradesFabric implements DedicatedServerModInitializer {
 	@Override
 	public void onInitializeServer() {
+		EscrowMarksStore.register();
 		PlayerTrades.init();
 		TradeEvents.register();
 	}

@@ -11,6 +11,7 @@ loom {
 	// Minecraft 26.1+ is unobfuscated. Splitting source sets keeps client-only
 	// game classes off the common compile classpath. This mod ships no client
 	// entrypoint and no client classes; the client source set stays empty.
+	accessWidenerPath = file("src/main/resources/player_trades.accesswidener")
 	splitEnvironmentSourceSets()
 
 	mods {
