@@ -21,7 +21,7 @@ public final class TradeCommands {
 								.executes(context -> withPlayer(context.getSource(), (runtime, player) ->
 										runtime.postOffer(player, StringArgumentType.getString(context, "text"))))))
 				.then(Commands.literal("accept")
-						.then(Commands.argument("player", StringArgumentType.word())
+						.then(Commands.argument("player", StringArgumentType.string())
 								.executes(context -> withPlayer(context.getSource(), (runtime, player) ->
 										runtime.accept(player, StringArgumentType.getString(context, "player"))))))
 				.then(Commands.literal("cancel")
@@ -30,10 +30,10 @@ public final class TradeCommands {
 						.requires(source -> allowed(source, PermissionChecker.ADMIN_LOG))
 						.executes(context -> withPlayer(context.getSource(), (runtime, player) -> say(player, runtime.logPage(null, 1))))
 						.then(Commands.literal("show")
-								.then(Commands.argument("id", StringArgumentType.word())
+								.then(Commands.argument("id", StringArgumentType.string())
 										.executes(context -> withPlayer(context.getSource(), (runtime, player) ->
 												say(player, runtime.logShow(StringArgumentType.getString(context, "id")))))))
-						.then(Commands.argument("selector", StringArgumentType.word())
+						.then(Commands.argument("selector", StringArgumentType.string())
 								.executes(context -> withPlayer(context.getSource(), (runtime, player) ->
 										say(player, page(runtime, StringArgumentType.getString(context, "selector"), 1))))
 								.then(Commands.argument("page", IntegerArgumentType.integer(1))
@@ -42,7 +42,7 @@ public final class TradeCommands {
 				.then(Commands.literal("admin")
 						.then(Commands.literal("cancel")
 								.requires(source -> allowed(source, PermissionChecker.ADMIN_CANCEL))
-								.then(Commands.argument("player", StringArgumentType.word())
+								.then(Commands.argument("player", StringArgumentType.string())
 										.executes(context -> withPlayer(context.getSource(), (runtime, player) ->
 												runtime.adminCancel(player, StringArgumentType.getString(context, "player"))))))
 						.then(Commands.literal("reload")
