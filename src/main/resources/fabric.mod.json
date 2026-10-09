@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"id": "player_trades",
+	"version": "${version}",
+	"name": "Player Trades",
+	"description": "Server-side player-to-player item trades. Java and Bedrock (Geyser) players use a vanilla chest screen. No client mod.",
+	"authors": [
+		"Joshua Vucelich"
+	],
+	"contact": {},
+	"license": "MIT",
+	"environment": "server",
+	"entrypoints": {
+		"server": [
+			"com.vucelich.playertrades.fabric.PlayerTradesFabric"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
