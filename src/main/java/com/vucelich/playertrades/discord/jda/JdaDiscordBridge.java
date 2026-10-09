@@ -97,7 +97,19 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 		if (playerId == null) {
 			return;
 		}
-		publish(playerId, OfferMessages.open(playerName, offerText));
+		TrackedOffer offer = offers.computeIfAbsent(playerId, ignored -> new TrackedOffer());
+		synchronized (offer) {
+			// A message can start only one thread. After a trade, post a fresh message
+			// so the next negotiation is not stuck on the previous thread.
+			if (offer.threaded) {
+				offer.messageId = null;
+				offer.sent = null;
+				offer.sending = false;
+				offer.threaded = false;
+			}
+			offer.desired = OfferMessages.open(playerName, offerText);
+			flush(offer);
+		}
 	}
 
 	@Override
@@ -253,7 +265,13 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 		}
 		String nameA = offer.pendingNameA;
 		String nameB = offer.pendingNameB;
+		String boundMessage = messageId;
 		container.createThreadChannel(OfferMessages.threadName(nameA, nameB), messageId).queue(thread -> {
+			synchronized (offer) {
+				if (boundMessage.equals(offer.messageId)) {
+					offer.threaded = true;
+				}
+			}
 			threads.put(sessionId, thread);
 			sessionsByThread.put(thread.getId(), sessionId);
 			List<String> queued = waitingRelays.remove(sessionId);
@@ -354,5 +372,6 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 		private UUID pendingSession;
 		private String pendingNameA;
 		private String pendingNameB;
+		private boolean threaded;
 	}
 }
