@@ -1,0 +1,57 @@
+package com.vucelich.playertrades.escrow;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import net.minecraft.world.item.ItemStack;
+
+public final class ItemEscrow {
+	public record Entry(ItemStack stack, int origin) {}
+
+	private final List<Entry> entries = new ArrayList<>();
+
+	public int size() {
+		return entries.size();
+	}
+
+	public boolean isEmpty() {
+		return entries.isEmpty();
+	}
+
+	public ItemStack view(int index) {
+		return entries.get(index).stack();
+	}
+
+	public void add(ItemStack stack, int origin) {
+		entries.add(new Entry(stack, origin));
+	}
+
+	public Entry remove(int index) {
+		return entries.remove(index);
+	}
+
+	public List<Entry> drain() {
+		List<Entry> copy = List.copyOf(entries);
+		entries.clear();
+		return copy;
+	}
+
+	public List<Entry> copyEntries() {
+		List<Entry> copies = new ArrayList<>();
+		for (Entry entry : entries) {
+			copies.add(new Entry(entry.stack().copy(), entry.origin()));
+		}
+		return copies;
+	}
+
+	public void restore(List<Entry> saved) {
+		entries.clear();
+		for (Entry entry : saved) {
+			entries.add(new Entry(entry.stack().copy(), entry.origin()));
+		}
+	}
+
+	public void clear() {
+		entries.clear();
+	}
+}

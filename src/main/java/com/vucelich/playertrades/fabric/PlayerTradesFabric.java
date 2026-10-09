@@ -7,5 +7,6 @@ public final class PlayerTradesFabric implements DedicatedServerModInitializer {
 	@Override
 	public void onInitializeServer() {
 		PlayerTrades.init();
+		TradeEvents.register();
 	}
 }
