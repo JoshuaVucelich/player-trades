@@ -18,7 +18,7 @@ public final class TradeEvents {
 
 	public static void register() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> TradeCommands.register(dispatcher));
-		ServerLifecycleEvents.SERVER_STARTING.register(server -> runtime = new TradeRuntime(server));
+		ServerLifecycleEvents.SERVER_STARTING.register(server -> runtime = new TradeRuntime(server, FabricConfigs.load()));
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			if (runtime != null) {
 				runtime.shutdown();

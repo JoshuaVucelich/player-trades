@@ -1,20 +1,29 @@
 package com.vucelich.playertrades.gui;
 
+import java.util.List;
+
 import com.vucelich.playertrades.escrow.ItemEscrow;
 import com.vucelich.playertrades.session.TradeSession;
 import com.vucelich.playertrades.session.TradeState;
 
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
 public final class TradePainter {
 	private TradePainter() {}
 
-	public static void paint(TradeMenu menu, ServerPlayer viewer, TradeSession session, ItemEscrow own, ItemEscrow partner, boolean selfReady, boolean partnerReady) {
+	public static void paint(
+			TradeMenu menu,
+			TradeSession session,
+			ItemEscrow own,
+			ItemEscrow partner,
+			boolean selfReady,
+			boolean partnerReady,
+			List<ItemStack> sourceCells,
+			int sourcePages) {
 		Container display = menu.display();
+		menu.setPageCount(sourcePages);
 		for (int slot = 0; slot < display.getContainerSize(); slot++) {
 			display.setItem(slot, ItemStack.EMPTY);
 		}
@@ -22,11 +31,17 @@ public final class TradePainter {
 		display.setItem(TradeLayout.PARTNER_LAMP, TradeIcons.named(partnerReady ? Items.DYE.lime() : Items.DYE.gray(), partnerReady ? "Partner ready" : "Partner waiting"));
 		paintOffer(display, TradeLayout.OWN_OFFER, own);
 		display.setItem(TradeLayout.OWN_LAMP, TradeIcons.named(selfReady ? Items.DYE.lime() : Items.DYE.gray(), selfReady ? "You are ready" : "You are not ready"));
-		paintSource(display, viewer.getInventory(), menu.page());
+		for (int cell = 0; cell < TradeLayout.SOURCE_SLOTS && cell < sourceCells.size(); cell++) {
+			ItemStack stack = sourceCells.get(cell);
+			if (stack != null && !stack.isEmpty()) {
+				display.setItem(TradeLayout.SOURCE_START + cell, stack);
+			}
+		}
+		SourceTab tab = menu.tab();
 		display.setItem(TradeLayout.PREV_PAGE, TradeIcons.named(Items.ARROW, "Previous page"));
-		display.setItem(TradeLayout.TAB_INVENTORY, TradeIcons.named(Items.CHEST, "Inventory"));
-		display.setItem(TradeLayout.TAB_ENDER, TradeIcons.named(Items.BARRIER, "Ender chest comes later"));
-		display.setItem(TradeLayout.TAB_SHULKER, TradeIcons.named(Items.BARRIER, "Shulkers come later"));
+		display.setItem(TradeLayout.TAB_INVENTORY, TradeIcons.named(Items.CHEST, "Inventory", tab == SourceTab.INVENTORY));
+		display.setItem(TradeLayout.TAB_ENDER, TradeIcons.named(Items.ENDER_CHEST, "Ender chest", tab == SourceTab.ENDER));
+		display.setItem(TradeLayout.TAB_SHULKER, TradeIcons.named(Items.SHULKER_BOX, "Shulkers", tab == SourceTab.PICKER || tab == SourceTab.CONTENTS));
 		display.setItem(TradeLayout.NEXT_PAGE, TradeIcons.named(Items.ARROW, "Next page"));
 		display.setItem(50, TradeIcons.named(Items.STAINED_GLASS_PANE.black(), " "));
 		display.setItem(51, TradeIcons.named(Items.STAINED_GLASS_PANE.black(), " "));
@@ -44,19 +59,6 @@ public final class TradePainter {
 		}
 	}
 
-	private static void paintSource(Container display, Inventory inventory, int page) {
-		for (int cell = 0; cell < TradeLayout.SOURCE_SLOTS; cell++) {
-			int inventoryIndex = TradeLayout.inventoryIndex(TradeLayout.SOURCE_START + cell, page);
-			if (inventoryIndex < 0) {
-				continue;
-			}
-			ItemStack stack = inventory.getItem(inventoryIndex);
-			if (!stack.isEmpty()) {
-				display.setItem(TradeLayout.SOURCE_START + cell, stack.copy());
-			}
-		}
-	}
-
 	private static ItemStack readyButton(TradeSession session, boolean selfReady) {
 		String name;
 		if (session.state() == TradeState.COUNTDOWN) {
@@ -66,6 +68,6 @@ public final class TradePainter {
 		} else {
 			name = "Not ready";
 		}
-		return TradeIcons.named(selfReady ? Items.DYE.lime() : Items.DYE.gray(), name);
+		return TradeIcons.named(selfReady || session.state() == TradeState.COUNTDOWN ? Items.DYE.lime() : Items.DYE.gray(), name);
 	}
 }

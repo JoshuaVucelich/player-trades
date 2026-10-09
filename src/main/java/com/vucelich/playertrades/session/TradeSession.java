@@ -23,6 +23,9 @@ public final class TradeSession {
 	private boolean readyA;
 	private boolean readyB;
 	private String reason = "";
+	private int countdownLength = TradeLimits.COUNTDOWN_TICKS;
+	private boolean allowEmptyTrades;
+	private long lastActivityMillis;
 
 	private TradeSession(UUID playerA, String nameA, String offerText, long createdAtMillis, long ttlMillis) {
 		this.playerA = playerA;
@@ -131,7 +134,34 @@ public final class TradeSession {
 		this.playerB = playerB;
 		this.nameB = nameB;
 		this.generation = 1;
+		this.lastActivityMillis = System.currentTimeMillis();
 		this.state = TradeState.NEGOTIATING;
+	}
+
+	public void applyRules(int countdownTicks, boolean allowEmptyTrades) {
+		this.countdownLength = Math.max(1, countdownTicks);
+		this.allowEmptyTrades = allowEmptyTrades;
+	}
+
+	public void touch(long nowMillis) {
+		this.lastActivityMillis = nowMillis;
+	}
+
+	public boolean idle(long nowMillis, long timeoutMillis) {
+		if (timeoutMillis <= 0 || !state.menuOpen() || lastActivityMillis <= 0) {
+			return false;
+		}
+		return nowMillis - lastActivityMillis >= timeoutMillis;
+	}
+
+	public void resumeNegotiation() {
+		if (state != TradeState.COMMITTING) {
+			throw new IllegalTradeTransitionException(state, "hold");
+		}
+		readyA = false;
+		readyB = false;
+		countdownTicks = 0;
+		state = TradeState.NEGOTIATING;
 	}
 
 	public ArmResult arm(Side side, int countA, int countB) {
@@ -139,7 +169,7 @@ public final class TradeSession {
 			throw new IllegalTradeTransitionException(state, "arm");
 		}
 		int own = side == Side.A ? countA : countB;
-		if (own <= 0) {
+		if (own <= 0 && !allowEmptyTrades) {
 			return ArmResult.EMPTY;
 		}
 		if (state == TradeState.COUNTDOWN) {
@@ -159,9 +189,9 @@ public final class TradeSession {
 		} else {
 			readyB = true;
 		}
-		if (readyA && readyB && countA > 0 && countB > 0) {
+		if (readyA && readyB && (allowEmptyTrades || (countA > 0 && countB > 0))) {
 			state = TradeState.COUNTDOWN;
-			countdownTicks = TradeLimits.COUNTDOWN_TICKS;
+			countdownTicks = countdownLength;
 			capturedGeneration = generation;
 			return ArmResult.COUNTDOWN;
 		}

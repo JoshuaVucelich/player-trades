@@ -38,11 +38,16 @@ public final class TradeLayout {
 	}
 
 	public static int clampPage(int page) {
+		return clampPage(page, PAGES);
+	}
+
+	public static int clampPage(int page, int pageCount) {
+		int last = Math.max(1, pageCount);
 		if (page < 0) {
 			return 0;
 		}
-		if (page >= PAGES) {
-			return PAGES - 1;
+		if (page >= last) {
+			return last - 1;
 		}
 		return page;
 	}

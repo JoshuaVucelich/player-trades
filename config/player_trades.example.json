@@ -1,0 +1,18 @@
+{
+  "countdownSeconds": 3,
+  "sessionTimeoutSeconds": 120,
+  "offerTimeoutSeconds": 300,
+  "cooldownSeconds": 10,
+  "requireSameWorld": false,
+  "maxDistance": 0,
+  "overflow": "ender_then_drop",
+  "allowEmptyTrades": false,
+  "blacklist": [],
+  "discord": {
+    "enabled": false,
+    "token": "",
+    "guildId": "",
+    "tradesChannelId": "",
+    "relayNegotiation": true
+  }
+}
