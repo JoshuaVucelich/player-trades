@@ -4,20 +4,26 @@ Server-only Fabric mod for Minecraft Java 26.3. Java and Bedrock players (Geyser
 
 Minecraft 26.1+ ships unobfuscated. Core code may import `net.minecraft` and stay loader-agnostic. It must not import `net.fabricmc` or a future NeoForge package. Fabric event registration and the dedicated-server entrypoint live in `com.vucelich.playertrades.fabric`.
 
-Expected game types, confirmed against the 26.3 jar before M1 menu code is written:
+These names were checked against the unobfuscated Minecraft 26.3 common jar and Fabric API 0.162.0+26.3:
 
 | Concern | Type |
 | --- | --- |
 | Chest menu | `net.minecraft.world.inventory.ChestMenu` |
-| Menu id the client already knows | `net.minecraft.world.inventory.MenuType.GENERIC_9x6` |
+| Menu id the client already knows | `MenuType.GENERIC_9x6` (`MenuType<ChestMenu>`) |
 | Virtual slots | `net.minecraft.world.SimpleContainer` (54 slots) |
-| Open | `ServerPlayer.openMenu(MenuProvider)` |
-| Ender chest | `Player.getEnderChestInventory()` |
-| Shulker contents | `DataComponents.CONTAINER` / `ItemContainerContents` |
-| Clickable chat | `ClickEvent.RunCommand` |
+| Open | `ServerPlayer.openMenu(net.minecraft.world.MenuProvider)` returns `OptionalInt` |
+| Ender chest | `Player.getEnderChestInventory()` returns `PlayerEnderChestContainer` |
+| Shulker contents | `DataComponents.CONTAINER` (`DataComponentType<ItemContainerContents>`), built with `ItemContainerContents.fromItems` |
+| Clickable chat | `net.minecraft.network.chat.ClickEvent.RunCommand` |
+| Countdown tick | `ServerTickEvents.END_SERVER_TICK` |
+| Disconnect | `ServerPlayConnectionEvents.DISCONNECT` |
+| Death | `ServerLivingEntityEvents.AFTER_DEATH` |
+| Dimension change | `ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL` |
+| Chat advertisement | `ServerMessageEvents.CHAT_MESSAGE` |
+| Commands | `CommandRegistrationCallback` |
 | Identity | player UUID and `GameProfile` name |
 
-If a rename shows up in the 26.3 jar, follow the jar. Do not register a new menu id to paper over a rename: vanilla clients and Geyser only know the generic 9×N menus.
+Do not register a new menu id. Vanilla clients and Geyser only know the generic 9×N menus.
 
 ## Packages
 
@@ -190,7 +196,7 @@ When taking one inner stack:
 1. Copy the shulker `ItemStack`.
 2. Copy the contents list out of the component. Do not mutate the list the live stack still references.
 3. Remove or shrink the chosen entry.
-4. `box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(copiedList))` (or the 26.3 equivalent if the factory name differs).
+4. `box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(copiedList))`. `fromItems` is the factory on the 26.3 class.
 5. Write the copied box back into the inventory or ender slot.
 6. Put a separate copy of the removed inner stack into escrow.
 
@@ -257,8 +263,8 @@ A completed session drops its escrow lists before `COMPLETED` is visible to othe
 | Event | When | Where items go |
 | --- | --- | --- |
 | Disconnect | `ServerPlayConnectionEvents.DISCONNECT`, while the `ServerPlayer` is still being saved | Inventory, then ender chest, then drop at last position. Rejoin must show the items. |
-| Death | Before or instead of putting stacks into the dying inventory | Item entities at the death position. The death inventory is about to be cleared or dropped; do not rely on it. |
-| Dimension change | After the player is in the new level | Cancel, then return into the inventory in the new level. |
+| Death | `ServerLivingEntityEvents.AFTER_DEATH`. Do not put stacks into the dying inventory | Item entities at the death position. The death inventory is about to be cleared or dropped; do not rely on it. |
+| Dimension change | `ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL`, after the player is in the new level | Cancel, then return into the inventory in the new level. |
 | Explicit cancel | Click or `/trade cancel` | Return order above. |
 
 If the disconnect callback turns out to run after the save in this Loader version, move the return earlier. The acceptance test is rejoin, not the callback name.
