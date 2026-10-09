@@ -16,6 +16,27 @@ public final class FabricConfigs {
 		return FabricLoader.getInstance().getConfigDir().resolve("player_trades.json");
 	}
 
+	public static TradeConfig.ConfigLoad reload(TradeConfig previous) {
+		Path path = path();
+		TradeConfig fallback = previous == null ? TradeConfig.defaults() : previous;
+		if (Files.notExists(path)) {
+			TradeConfig defaults = TradeConfig.defaults();
+			write(path, defaults);
+			PlayerTrades.LOGGER.info("Wrote default config/player_trades.json");
+			return TradeConfig.ConfigLoad.ok(defaults);
+		}
+		try {
+			TradeConfig.ConfigLoad load = TradeConfig.parse(Files.readString(path), fallback);
+			if (!load.replaced()) {
+				PlayerTrades.LOGGER.error("Keeping the previous config because player_trades.json could not be read: {}", load.error());
+			}
+			return load;
+		} catch (IOException failure) {
+			PlayerTrades.LOGGER.error("Keeping the previous config because player_trades.json could not be read");
+			return TradeConfig.ConfigLoad.keep(fallback, "player_trades.json could not be read");
+		}
+	}
+
 	public static TradeConfig load() {
 		Path path = path();
 		TradeConfig defaults = TradeConfig.defaults();

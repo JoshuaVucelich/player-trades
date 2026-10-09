@@ -1,5 +1,7 @@
 package com.vucelich.playertrades.fabric;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -20,6 +22,7 @@ import com.vucelich.playertrades.gui.TradeLayout;
 import com.vucelich.playertrades.gui.TradeMenu;
 import com.vucelich.playertrades.gui.TradePainter;
 import com.vucelich.playertrades.gui.TradeSources;
+import com.vucelich.playertrades.log.TradeLog;
 import com.vucelich.playertrades.perm.PermissionChecker;
 import com.vucelich.playertrades.session.AcceptProblem;
 import com.vucelich.playertrades.session.ArmResult;
@@ -60,6 +63,8 @@ public final class TradeRuntime implements TradeActions {
 	private TradeConfig config = TradeConfig.defaults();
 	private ItemBlacklist blacklist = new ItemBlacklist(List.of());
 	private PermissionChecker permissions = PermissionChecker.TRADE_ONLY;
+	private Path tradeLog;
+	private final Set<UUID> logged = new HashSet<>();
 
 	public TradeRuntime(MinecraftServer server) {
 		this(server, TradeConfig.defaults());
@@ -76,6 +81,100 @@ public final class TradeRuntime implements TradeActions {
 
 	public void setPermissions(PermissionChecker permissions) {
 		this.permissions = permissions == null ? PermissionChecker.TRADE_ONLY : permissions;
+	}
+
+	public void setTradeLog(Path tradeLog) {
+		this.tradeLog = tradeLog;
+	}
+
+	public boolean permits(ServerPlayer player, String node) {
+		return player != null && permissions.allows(player.getUUID(), node);
+	}
+
+	public String reload() {
+		TradeConfig.ConfigLoad load = FabricConfigs.reload(config);
+		if (!load.replaced()) {
+			return "Config was not changed. " + load.error();
+		}
+		applyConfig(load.config());
+		return "Config reloaded.";
+	}
+
+	public int adminCancel(ServerPlayer actor, String name) {
+		ServerPlayer target = findOnline(name);
+		if (target == null) {
+			tell(actor, "No player named " + name + " is online.");
+			return 0;
+		}
+		TradeSession session = directory.tradeOf(target.getUUID()).orElse(null);
+		if (session == null || session.playerB() == null) {
+			tell(actor, target.getScoreboardName() + " is not in a trade.");
+			return 0;
+		}
+		endSession(session, "admin", null, false);
+		tell(actor, "Cancelled the trade for " + target.getScoreboardName() + ".");
+		return 1;
+	}
+
+	public List<String> logPage(String playerFilter, int page) {
+		List<TradeLog.Entry> rows = new ArrayList<>();
+		try {
+			for (TradeLog.Entry entry : TradeLog.read(tradeLog)) {
+				if (entry.involves(playerFilter)) {
+					rows.add(entry);
+				}
+			}
+		} catch (IOException failure) {
+			PlayerTrades.LOGGER.error("Could not read the trade log");
+			return List.of("The trade log could not be read.");
+		}
+		java.util.Collections.reverse(rows);
+		int pageSize = 8;
+		int pages = Math.max(1, (rows.size() + pageSize - 1) / pageSize);
+		int safePage = Math.max(1, page);
+		if (rows.isEmpty()) {
+			return List.of("No trades are logged" + (playerFilter == null || playerFilter.isBlank() ? "." : " for " + playerFilter + "."));
+		}
+		if (safePage > pages) {
+			return List.of("There is no page " + safePage + ". The log has " + pages + ".");
+		}
+		List<String> lines = new ArrayList<>();
+		lines.add("Trades, page " + safePage + " of " + pages + ".");
+		int from = (safePage - 1) * pageSize;
+		for (TradeLog.Entry entry : rows.subList(from, Math.min(rows.size(), from + pageSize))) {
+			String names = entry.players().stream().map(TradeLog.Person::name).reduce((a, b) -> a + " and " + b).orElse("unknown");
+			lines.add(entry.time() + " " + entry.id() + " " + names + " " + entry.result() + (entry.reason().isBlank() ? "" : " (" + entry.reason() + ")"));
+		}
+		return lines;
+	}
+
+	public List<String> logShow(String id) {
+		try {
+			for (TradeLog.Entry entry : TradeLog.read(tradeLog)) {
+				if (!entry.id().equals(id)) {
+					continue;
+				}
+				List<String> lines = new ArrayList<>();
+				lines.add(entry.time() + " " + entry.result() + (entry.reason().isBlank() ? "" : " (" + entry.reason() + ")"));
+				for (int side = 0; side < entry.offers().size(); side++) {
+					String name = side < entry.players().size() ? entry.players().get(side).name() : "side " + (side + 1);
+					List<TradeLog.Stack> stacks = entry.offers().get(side);
+					if (stacks.isEmpty()) {
+						lines.add(name + ": nothing");
+						continue;
+					}
+					for (TradeLog.Stack stack : stacks) {
+						String custom = stack.customName().isBlank() ? "" : " \"" + stack.customName() + "\"";
+						lines.add(name + ": " + stack.count() + " " + stack.id() + custom);
+					}
+				}
+				return lines;
+			}
+		} catch (IOException failure) {
+			PlayerTrades.LOGGER.error("Could not read the trade log");
+			return List.of("The trade log could not be read.");
+		}
+		return List.of("No trade with that id.");
 	}
 
 	public void applyConfig(TradeConfig config) {
@@ -491,6 +590,7 @@ public final class TradeRuntime implements TradeActions {
 					swapped = true;
 					spawnDrops(left, leftBags);
 					spawnDrops(right, rightBags);
+					logTerminal(session, "COMPLETED", "");
 					leftEscrow.clear();
 					rightEscrow.clear();
 					session.complete();
@@ -538,6 +638,7 @@ public final class TradeRuntime implements TradeActions {
 		if (!session.state().isTerminal()) {
 			session.cancel(reason);
 		}
+		logTerminal(session, "CANCELLED", reason);
 		rememberCooldown(session);
 		directory.unlink(session);
 		ServerPlayer left = server.getPlayerList().getPlayer(session.playerA());
@@ -728,6 +829,33 @@ public final class TradeRuntime implements TradeActions {
 			case "blacklist" -> "The trade was cancelled because an offered item is blacklisted. Your items were returned.";
 			default -> "Trade cancelled. Your items were returned.";
 		};
+	}
+
+	private void logTerminal(TradeSession session, String result, String reason) {
+		if (tradeLog == null || session.playerB() == null || !logged.add(session.id())) {
+			return;
+		}
+		ServerPlayer left = server.getPlayerList().getPlayer(session.playerA());
+		ServerPlayer right = server.getPlayerList().getPlayer(session.playerB());
+		String world = "minecraft:overworld";
+		if (left != null) {
+			world = left.level().dimension().identifier().toString();
+		} else if (right != null) {
+			world = right.level().dimension().identifier().toString();
+		}
+		String line = TradeLogWriter.line(
+				server,
+				session,
+				result,
+				reason,
+				world,
+				escrow(session, Side.A).copyEntries(),
+				escrow(session, Side.B).copyEntries());
+		try {
+			TradeLog.append(tradeLog, line);
+		} catch (IOException failure) {
+			PlayerTrades.LOGGER.error("Could not append the trade log");
+		}
 	}
 
 	private void rememberCooldown(TradeSession session) {

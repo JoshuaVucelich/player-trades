@@ -18,7 +18,11 @@ public final class TradeEvents {
 
 	public static void register() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> TradeCommands.register(dispatcher));
-		ServerLifecycleEvents.SERVER_STARTING.register(server -> runtime = new TradeRuntime(server, FabricConfigs.load()));
+		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+			runtime = new TradeRuntime(server, FabricConfigs.load());
+			runtime.setPermissions(new FabricPermissions(server));
+			runtime.setTradeLog(net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("player_trades").resolve("trades.jsonl"));
+		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			if (runtime != null) {
 				runtime.shutdown();
