@@ -2,7 +2,17 @@
 
 Server-side Fabric mod for player-to-player item trades on a Minecraft Java **26.3** dedicated server. Java players and Bedrock players (Geyser/Floodgate) use the same vanilla chest screen. There is no client mod and no custom client UI.
 
-This repository is a buildable skeleton plus the design and milestone plan. Trade sessions, commands, and the Discord bot are not implemented yet. See [docs/MILESTONES.md](docs/MILESTONES.md) and [docs/DESIGN.md](docs/DESIGN.md).
+Milestone 1 is implemented: offers, a vanilla chest trade screen, ready and countdown, and an inventory-only atomic swap. Shulker tabs, the trade log, and Discord are still ahead. See [docs/MILESTONES.md](docs/MILESTONES.md) and [docs/DESIGN.md](docs/DESIGN.md).
+
+```
+/trade offer [text]
+WTS [text]
+/trade accept <name>
+/trade
+/trade cancel
+```
+
+Both players select stacks in the chest screen, then press Ready. Escrowed items leave the inventory immediately. A 3 second countdown swaps them, or the trade pauses if either inventory cannot fit the other side.
 
 ## Requirements
 

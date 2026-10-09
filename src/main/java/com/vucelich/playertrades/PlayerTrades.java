@@ -6,7 +6,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Loader-agnostic entry for Player Trades.
  * Fabric wiring lives in {@code com.vucelich.playertrades.fabric}.
- * Trade sessions, menus, and the Discord bridge are not implemented yet.
+ * Fabric wiring lives in {@code fabric}. Session rules do not import a loader.
  */
 public final class PlayerTrades {
 	public static final String MOD_ID = "player_trades";
