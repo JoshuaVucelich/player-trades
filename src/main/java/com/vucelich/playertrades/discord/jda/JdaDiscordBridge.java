@@ -52,6 +52,7 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 	private final Map<String, UUID> sessionsByThread = new ConcurrentHashMap<>();
 	private final Map<UUID, List<String>> waitingRelays = new ConcurrentHashMap<>();
 	private final Set<UUID> openingThreads = ConcurrentHashMap.newKeySet();
+	private final Object relayLock = new Object();
 	private final AtomicBoolean channelWarned = new AtomicBoolean();
 	private volatile JDA jda;
 
@@ -145,17 +146,18 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 			return;
 		}
 		String line = OfferMessages.relay(speaker, text);
-		ThreadChannel thread = threads.get(sessionId);
-		if (thread != null) {
-			send(thread, line);
-			return;
-		}
-		List<String> queue = waitingRelays.computeIfAbsent(sessionId, ignored -> new ArrayList<>());
-		synchronized (queue) {
-			if (queue.size() < 20) {
-				queue.add(line);
+		ThreadChannel thread;
+		synchronized (relayLock) {
+			thread = threads.get(sessionId);
+			if (thread == null) {
+				List<String> queue = waitingRelays.computeIfAbsent(sessionId, ignored -> new ArrayList<>());
+				if (queue.size() < 20) {
+					queue.add(line);
+				}
+				return;
 			}
 		}
+		send(thread, line);
 	}
 
 	@Override
@@ -272,17 +274,16 @@ public final class JdaDiscordBridge extends ListenerAdapter implements DiscordBr
 					offer.threaded = true;
 				}
 			}
-			threads.put(sessionId, thread);
-			sessionsByThread.put(thread.getId(), sessionId);
-			List<String> queued = waitingRelays.remove(sessionId);
+			List<String> queued;
+			synchronized (relayLock) {
+				threads.put(sessionId, thread);
+				sessionsByThread.put(thread.getId(), sessionId);
+				queued = waitingRelays.remove(sessionId);
+			}
 			if (queued == null) {
 				return;
 			}
-			List<String> copy;
-			synchronized (queued) {
-				copy = new ArrayList<>(queued);
-			}
-			for (String line : copy) {
+			for (String line : queued) {
 				send(thread, line);
 			}
 		}, this::logFailure);
