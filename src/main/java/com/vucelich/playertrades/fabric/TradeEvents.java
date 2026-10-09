@@ -22,6 +22,17 @@ public final class TradeEvents {
 			runtime = new TradeRuntime(server, FabricConfigs.load());
 			runtime.setPermissions(new FabricPermissions(server));
 			runtime.setTradeLog(net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("player_trades").resolve("trades.jsonl"));
+			runtime.bindDiscord(settings -> DiscordHosts.open(settings, (sessionId, speaker, text) -> {
+				TradeRuntime current = runtime;
+				if (current != null) {
+					current.deliverDiscord(sessionId, speaker, text);
+				}
+			}, task -> {
+				TradeRuntime current = runtime;
+				if (current != null) {
+					current.execute(task);
+				}
+			}));
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			if (runtime != null) {
@@ -38,7 +49,20 @@ public final class TradeEvents {
 			if (runtime == null) {
 				return;
 			}
-			OfferPhrases.wtsBody(message.signedContent()).ifPresent(text -> runtime.postOffer(player, text));
+			String content = message.signedContent();
+			if (content == null) {
+				return;
+			}
+			String trimmed = content.trim();
+			if (trimmed.startsWith("/")) {
+				return;
+			}
+			var offer = OfferPhrases.wtsBody(trimmed);
+			if (offer.isPresent()) {
+				runtime.postOffer(player, offer.get());
+				return;
+			}
+			runtime.relayChat(player, trimmed);
 		});
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
 			if (runtime != null) {
