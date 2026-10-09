@@ -56,6 +56,18 @@ public final class TradeDirectory {
 		return Optional.ofNullable(sessions.get(player));
 	}
 
+	public Optional<TradeSession> tradeById(UUID id) {
+		if (id == null) {
+			return Optional.empty();
+		}
+		for (TradeSession session : trades()) {
+			if (session.id().equals(id)) {
+				return Optional.of(session);
+			}
+		}
+		return Optional.empty();
+	}
+
 	public Optional<TradeSession> offerOf(UUID player) {
 		return Optional.ofNullable(offers.get(player));
 	}

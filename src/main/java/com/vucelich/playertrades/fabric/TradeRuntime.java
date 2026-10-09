@@ -12,7 +12,13 @@ import java.util.UUID;
 
 import com.vucelich.playertrades.PlayerTrades;
 import com.vucelich.playertrades.TradeLimits;
+import com.vucelich.playertrades.config.DiscordSettings;
 import com.vucelich.playertrades.config.TradeConfig;
+import com.vucelich.playertrades.discord.DiscordBridge;
+import com.vucelich.playertrades.discord.DiscordHost;
+import com.vucelich.playertrades.discord.NoOpDiscordBridge;
+import com.vucelich.playertrades.discord.OfferNotice;
+import com.vucelich.playertrades.discord.RelayPolicy;
 import com.vucelich.playertrades.escrow.ItemEscrow;
 import com.vucelich.playertrades.escrow.ItemMover;
 import com.vucelich.playertrades.escrow.ItemOrigin;
@@ -65,6 +71,9 @@ public final class TradeRuntime implements TradeActions {
 	private PermissionChecker permissions = PermissionChecker.TRADE_ONLY;
 	private Path tradeLog;
 	private final Set<UUID> logged = new HashSet<>();
+	private final Set<UUID> expiredNotices = new HashSet<>();
+	private DiscordBridge bridge = new NoOpDiscordBridge();
+	private DiscordHost discordHost = settings -> new NoOpDiscordBridge();
 
 	public TradeRuntime(MinecraftServer server) {
 		this(server, TradeConfig.defaults());
@@ -87,6 +96,38 @@ public final class TradeRuntime implements TradeActions {
 		this.tradeLog = tradeLog;
 	}
 
+	public void bindDiscord(DiscordHost host) {
+		this.discordHost = host == null ? settings -> new NoOpDiscordBridge() : host;
+		replaceBridge();
+	}
+
+	public void execute(Runnable task) {
+		if (task != null) {
+			server.executeIfPossible(task);
+		}
+	}
+
+	public void deliverDiscord(UUID sessionId, String speaker, String text) {
+		server.executeIfPossible(() -> deliverOnServer(sessionId, speaker, text));
+	}
+
+	public void relayChat(ServerPlayer player, String text) {
+		if (player == null) {
+			return;
+		}
+		TradeSession session = directory.tradeOf(player.getUUID()).orElse(null);
+		boolean negotiating = session != null && session.state().menuOpen();
+		if (!RelayPolicy.fromGame(config.discord().relayNegotiation(), negotiating, session != null, text)) {
+			return;
+		}
+		try {
+			bridge.openThread(session.id(), session.playerA(), session.nameA(), session.nameB());
+			bridge.relayFromGame(session.id(), player.getScoreboardName(), text);
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.warn("Discord relay failed");
+		}
+	}
+
 	public boolean permits(ServerPlayer player, String node) {
 		return player != null && permissions.allows(player.getUUID(), node);
 	}
@@ -96,7 +137,11 @@ public final class TradeRuntime implements TradeActions {
 		if (!load.replaced()) {
 			return "Config was not changed. " + load.error();
 		}
+		DiscordSettings before = config.discord();
 		applyConfig(load.config());
+		if (discordChanged(before, config.discord())) {
+			replaceBridge();
+		}
 		return "Config reloaded.";
 	}
 
@@ -196,6 +241,7 @@ public final class TradeRuntime implements TradeActions {
 			return 0;
 		}
 		broadcastOffer(result.session(), result.replaced());
+		postToDiscord(player.getUUID(), player.getScoreboardName(), text);
 		return 1;
 	}
 
@@ -224,10 +270,21 @@ public final class TradeRuntime implements TradeActions {
 				offerer.getUUID(),
 				System.currentTimeMillis());
 		if (!result.ok()) {
+			if (result.problem() == AcceptProblem.EXPIRED) {
+				notice(offerer.getUUID(), offerer.getScoreboardName(), OfferNotice.EXPIRED);
+			}
 			tell(acceptor, acceptMessage(result.problem(), offerer.getScoreboardName()));
 			return 0;
 		}
 		TradeSession session = result.session();
+		notice(offerer.getUUID(), offerer.getScoreboardName(), OfferNotice.ACCEPTED);
+		if (config.discord().relayNegotiation()) {
+			try {
+				bridge.openThread(session.id(), offerer.getUUID(), session.nameA(), session.nameB());
+			} catch (RuntimeException failure) {
+				PlayerTrades.LOGGER.warn("Discord thread was not opened");
+			}
+		}
 		session.applyRules(config.countdownTicks(), config.allowEmptyTrades());
 		session.touch(System.currentTimeMillis());
 		escrowA.put(session.id(), new ItemEscrow());
@@ -244,7 +301,7 @@ public final class TradeRuntime implements TradeActions {
 	public int cancel(ServerPlayer player) {
 		TradeSession offer = directory.offerOf(player.getUUID()).orElse(null);
 		if (offer != null) {
-			directory.withdrawOffer(player.getUUID());
+			withdrawAdvertisement(player.getUUID(), OfferNotice.CANCELLED);
 			tell(player, "Your offer was withdrawn.");
 			return 1;
 		}
@@ -274,6 +331,7 @@ public final class TradeRuntime implements TradeActions {
 
 	public void tick() {
 		long now = System.currentTimeMillis();
+		expireOffers(now);
 		for (TradeSession session : directory.trades()) {
 			if (session.idle(now, config.sessionTimeoutMillis())) {
 				endSession(session, "timeout", null, false);
@@ -307,12 +365,12 @@ public final class TradeRuntime implements TradeActions {
 	}
 
 	public void onDisconnect(ServerPlayer player) {
-		directory.withdrawOffer(player.getUUID());
+		withdrawAdvertisement(player.getUUID(), OfferNotice.CANCELLED);
 		directory.tradeOf(player.getUUID()).ifPresent(session -> endSession(session, "disconnect", player, false));
 	}
 
 	public void onDeath(ServerPlayer player) {
-		directory.withdrawOffer(player.getUUID());
+		withdrawAdvertisement(player.getUUID(), OfferNotice.CANCELLED);
 		directory.tradeOf(player.getUUID()).ifPresent(session -> endSession(session, "death", player, true));
 	}
 
@@ -324,9 +382,12 @@ public final class TradeRuntime implements TradeActions {
 		for (TradeSession session : new ArrayList<>(directory.trades())) {
 			endSession(session, "shutdown", null, false);
 		}
-		for (TradeSession offer : directory.offers()) {
-			directory.withdrawOffer(offer.playerA());
+		long now = System.currentTimeMillis();
+		for (TradeSession offer : new ArrayList<>(directory.offers())) {
+			OfferNotice notice = offer.expired(now) ? OfferNotice.EXPIRED : OfferNotice.CANCELLED;
+			withdrawAdvertisement(offer.playerA(), notice);
 		}
+		bridge.shutdown();
 	}
 
 	@Override
@@ -656,6 +717,7 @@ public final class TradeRuntime implements TradeActions {
 		}
 		escrowA.remove(session.id());
 		escrowB.remove(session.id());
+		notice(session.playerA(), session.nameA(), OfferNotice.CANCELLED);
 		PlayerTrades.LOGGER.info("Trade {} cancelled ({}) between {} and {}", session.id(), reason, session.nameA(), session.nameB());
 	}
 
@@ -673,6 +735,7 @@ public final class TradeRuntime implements TradeActions {
 		tell(right, "Trade complete.");
 		escrowA.remove(session.id());
 		escrowB.remove(session.id());
+		notice(session.playerA(), session.nameA(), OfferNotice.COMPLETED);
 	}
 
 	private void returnEscrow(TradeSession session, Side side, ServerPlayer owner, ServerPlayer deadOrGone, boolean deathDrop) {
@@ -727,6 +790,88 @@ public final class TradeRuntime implements TradeActions {
 			names.add(session.nameB());
 		}
 		return String.join(" and ", names);
+	}
+
+	private void replaceBridge() {
+		DiscordBridge previous = this.bridge;
+		this.bridge = new NoOpDiscordBridge();
+		if (previous != null) {
+			try {
+				previous.shutdown();
+			} catch (Throwable failure) {
+				PlayerTrades.LOGGER.warn("Discord bridge did not shut down cleanly");
+			}
+		}
+		DiscordBridge next;
+		try {
+			next = discordHost.open(config.discord());
+		} catch (Throwable failure) {
+			PlayerTrades.LOGGER.warn("Discord bridge was not started");
+			next = new NoOpDiscordBridge();
+		}
+		this.bridge = next == null ? new NoOpDiscordBridge() : next;
+	}
+
+	private static boolean discordChanged(DiscordSettings before, DiscordSettings after) {
+		if (before == null || after == null) {
+			return true;
+		}
+		return before.enabled() != after.enabled()
+				|| !before.token().equals(after.token())
+				|| !before.guildId().equals(after.guildId())
+				|| !before.tradesChannelId().equals(after.tradesChannelId());
+	}
+
+	private void postToDiscord(UUID playerId, String name, String text) {
+		try {
+			bridge.postOffer(playerId, name, text);
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.warn("Discord offer post failed");
+		}
+	}
+
+	private void notice(UUID playerId, String name, OfferNotice notice) {
+		try {
+			bridge.updateOffer(playerId, name, notice);
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.warn("Discord offer update failed");
+		}
+	}
+
+	private void withdrawAdvertisement(UUID playerId, OfferNotice notice) {
+		TradeSession offer = directory.offerOf(playerId).orElse(null);
+		if (offer == null || !directory.withdrawOffer(playerId)) {
+			return;
+		}
+		this.notice(offer.playerA(), offer.nameA(), notice);
+	}
+
+	private void expireOffers(long now) {
+		for (TradeSession offer : directory.offers()) {
+			if (offer.expired(now) && expiredNotices.add(offer.id())) {
+				notice(offer.playerA(), offer.nameA(), OfferNotice.EXPIRED);
+			}
+		}
+	}
+
+	private void deliverOnServer(UUID sessionId, String speaker, String text) {
+		if (!RelayPolicy.fromDiscord(text)) {
+			return;
+		}
+		TradeSession session = directory.tradeById(sessionId).orElse(null);
+		boolean open = session != null && session.state().menuOpen() && session.playerB() != null;
+		ServerPlayer left = session == null ? null : server.getPlayerList().getPlayer(session.playerA());
+		ServerPlayer right = !open || session.playerB() == null ? null : server.getPlayerList().getPlayer(session.playerB());
+		if (!RelayPolicy.bothOnline(open, left != null, right != null)) {
+			return;
+		}
+		String who = speaker == null || speaker.isBlank() ? "Discord" : speaker.trim();
+		String body = text.trim();
+		if (body.length() > 300) {
+			body = body.substring(0, 300);
+		}
+		tell(left, "[Discord] " + who + ": " + body);
+		tell(right, "[Discord] " + who + ": " + body);
 	}
 
 	private void broadcastOffer(TradeSession offer, boolean replaced) {

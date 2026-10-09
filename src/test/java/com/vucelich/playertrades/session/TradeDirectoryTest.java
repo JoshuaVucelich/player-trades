@@ -33,6 +33,7 @@ class TradeDirectoryTest {
 		assertEquals(TradeState.NEGOTIATING, result.session().state());
 		assertTrue(directory.offerOf(alice).isEmpty());
 		assertEquals(result.session(), directory.tradeOf(bob).orElseThrow());
+		assertEquals(result.session(), directory.tradeById(result.session().id()).orElseThrow());
 
 		result.session().cancel("player");
 		directory.unlink(result.session());

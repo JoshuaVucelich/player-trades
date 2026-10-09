@@ -21,13 +21,47 @@ loom {
 	}
 }
 
+configurations {
+	discord
+}
+
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
+	// Voice natives are unused. slf4j is already on the dedicated server.
+	// The include list is explicit because Loom nests only direct include jars.
+	discord("net.dv8tion:JDA:6.7.0") {
+		exclude group: "club.minnced", module: "opus-java"
+		exclude group: "org.slf4j", module: "slf4j-api"
+	}
+	include "net.dv8tion:JDA:6.7.0"
+	include "net.sf.trove4j:core:3.1.0"
+	include "com.fasterxml.jackson.core:jackson-core:2.22.2"
+	include "com.fasterxml.jackson.core:jackson-databind:2.22.2"
+	include "com.fasterxml.jackson.core:jackson-annotations:2.22"
+	include "com.google.crypto.tink:tink:1.18.0"
+	include "com.google.code.findbugs:jsr305:3.0.2"
+	include "com.google.code.gson:gson:2.10.1"
+	include "com.google.errorprone:error_prone_annotations:2.22.0"
+	include "com.google.protobuf:protobuf-java:4.28.2"
+	include "com.neovisionaries:nv-websocket-client:2.14"
+	include "com.squareup.okhttp3:okhttp-jvm:5.5.0"
+	include "com.squareup.okio:okio-jvm:3.18.1"
+	include "org.jetbrains.kotlin:kotlin-stdlib:2.2.21"
+	include "org.jetbrains:annotations:13.0"
+	include "org.apache.commons:commons-collections4:4.6.0"
+
 	testImplementation "org.junit.jupiter:junit-jupiter:5.12.2"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+configurations.named("discord").configure {
+	transitive = true
+}
+configurations.named("implementation").configure {
+	extendsFrom(configurations.named("discord").get())
 }
 
 processResources {
