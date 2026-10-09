@@ -94,7 +94,7 @@ public final class PlayerStorage implements SplitImage {
 
 	private static ItemStack piece(ItemStack payload, int count) {
 		if (count >= payload.getCount()) {
-			return payload;
+			return payload.copy();
 		}
 		ItemStack piece = payload.copyWithCount(count);
 		payload.setCount(payload.getCount() - count);

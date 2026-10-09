@@ -26,11 +26,19 @@ public final class ItemMover {
 	}
 
 	public static void giveBack(ServerPlayer player, ItemEscrow escrow, boolean dropOnly) {
-		for (ItemEscrow.Entry entry : escrow.drain()) {
-			ItemStack leftover = place(player, entry.origin(), entry.stack(), dropOnly, true);
-			if (!leftover.isEmpty()) {
-				drop(player, leftover);
+		java.util.List<ItemEscrow.Entry> pending = new java.util.ArrayList<>(escrow.drain());
+		int placed = 0;
+		try {
+			for (ItemEscrow.Entry entry : pending) {
+				ItemStack leftover = place(player, entry.origin(), entry.stack(), dropOnly, true);
+				if (!leftover.isEmpty()) {
+					drop(player, leftover);
+				}
+				placed++;
 			}
+		} catch (RuntimeException failure) {
+			escrow.restore(PartialGive.remaining(pending, placed));
+			throw failure;
 		}
 	}
 
