@@ -19,6 +19,9 @@ import com.vucelich.playertrades.discord.DiscordHost;
 import com.vucelich.playertrades.discord.NoOpDiscordBridge;
 import com.vucelich.playertrades.discord.OfferNotice;
 import com.vucelich.playertrades.discord.RelayPolicy;
+import com.vucelich.playertrades.escrow.EscrowJournal;
+import com.vucelich.playertrades.escrow.EscrowReplay;
+import com.vucelich.playertrades.escrow.EscrowTake;
 import com.vucelich.playertrades.escrow.ItemEscrow;
 import com.vucelich.playertrades.escrow.ItemMover;
 import com.vucelich.playertrades.escrow.ItemOrigin;
@@ -32,6 +35,7 @@ import com.vucelich.playertrades.log.TradeLog;
 import com.vucelich.playertrades.perm.PermissionChecker;
 import com.vucelich.playertrades.session.AcceptProblem;
 import com.vucelich.playertrades.session.ArmResult;
+import com.vucelich.playertrades.session.BlacklistWalk;
 import com.vucelich.playertrades.session.Cooldowns;
 import com.vucelich.playertrades.session.ItemBlacklist;
 import com.vucelich.playertrades.session.OfferProblem;
@@ -45,6 +49,7 @@ import com.vucelich.playertrades.swap.PlayerStorage;
 import com.vucelich.playertrades.swap.SwapCommit;
 
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
@@ -57,6 +62,10 @@ import net.minecraft.world.Container;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.BundleContents;
+import net.minecraft.world.item.component.ItemContainerContents;
+import net.minecraft.world.level.gamerules.GameRules;
+import net.minecraft.world.level.storage.LevelResource;
 
 public final class TradeRuntime implements TradeActions {
 	private final MinecraftServer server;
@@ -74,6 +83,8 @@ public final class TradeRuntime implements TradeActions {
 	private final Set<UUID> expiredNotices = new HashSet<>();
 	private DiscordBridge bridge = new NoOpDiscordBridge();
 	private DiscordHost discordHost = settings -> new NoOpDiscordBridge();
+	private final Path journalDir;
+	private final EscrowReplay replay = new EscrowReplay();
 
 	public TradeRuntime(MinecraftServer server) {
 		this(server, TradeConfig.defaults());
@@ -81,6 +92,7 @@ public final class TradeRuntime implements TradeActions {
 
 	public TradeRuntime(MinecraftServer server, TradeConfig config) {
 		this.server = server;
+		this.journalDir = server.getWorldPath(LevelResource.DATA).resolve("player_trades").resolve("escrow");
 		applyConfig(config);
 	}
 
@@ -374,6 +386,53 @@ public final class TradeRuntime implements TradeActions {
 		directory.tradeOf(player.getUUID()).ifPresent(session -> endSession(session, "death", player, true));
 	}
 
+	public void replayOnline() {
+		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+			onJoin(player);
+		}
+	}
+
+	public void onJoin(ServerPlayer player) {
+		if (player == null) {
+			return;
+		}
+		List<EscrowJournal.Page> pages;
+		try {
+			pages = EscrowJournal.readAll(journalDir);
+		} catch (IOException failure) {
+			PlayerTrades.LOGGER.error("Could not read escrow journals for {}", player.getUUID(), failure);
+			return;
+		}
+		boolean returned = false;
+		for (EscrowJournal.Page page : pages) {
+			if (page.sessionId() == null || liveEscrow(page.sessionId()) || replay.alreadyGiven(page.sessionId(), player.getUUID())) {
+				continue;
+			}
+			List<EscrowJournal.Side> sides = sidesFor(page, player.getUUID());
+			if (sides.isEmpty()) {
+				continue;
+			}
+			try {
+				for (EscrowJournal.Side side : sides) {
+					ItemMover.giveBack(player, EscrowCodecs.decode(server, side), false);
+				}
+			} catch (RuntimeException failure) {
+				PlayerTrades.LOGGER.error("Could not return escrowed items from trade {} to {}", page.sessionId(), player.getUUID(), failure);
+				continue;
+			}
+			replay.claim(page, Set.of(player.getUUID()));
+			try {
+				EscrowJournal.write(journalDir, EscrowReplay.without(page, Set.of(player.getUUID())));
+			} catch (IOException failure) {
+				PlayerTrades.LOGGER.error("Returned escrow for {} in trade {} but the journal was not updated", player.getUUID(), page.sessionId(), failure);
+			}
+			returned = true;
+		}
+		if (returned) {
+			tell(player, "Items from an unfinished trade were returned.");
+		}
+	}
+
 	public void onDimensionChange(ServerPlayer player) {
 		directory.tradeOf(player.getUUID()).ifPresent(session -> endSession(session, "dimension", null, false));
 	}
@@ -550,7 +609,15 @@ public final class TradeRuntime implements TradeActions {
 			return;
 		}
 		ItemStack taken = stack.copy();
-		container.setItem(slot, ItemStack.EMPTY);
+		try {
+			EscrowTake.removeAfterJournal(
+					() -> persistOffer(session, session.sideOf(player.getUUID()), held, taken, origin),
+					() -> container.setItem(slot, ItemStack.EMPTY));
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.error("Could not journal escrow for {}", session.id(), failure);
+			tell(player, "That stack could not be escrowed.");
+			return;
+		}
 		held.add(taken, origin);
 		session.onEscrowEdited();
 		session.touch(System.currentTimeMillis());
@@ -577,8 +644,18 @@ public final class TradeRuntime implements TradeActions {
 			tell(player, "You can offer up to 8 stacks.");
 			return;
 		}
-		container.setItem(boxSlot, extraction.box());
-		held.add(extraction.removed(), ItemOrigin.shulker(ender, boxSlot, inner));
+		ItemStack removed = extraction.removed().copy();
+		ItemOrigin origin = ItemOrigin.shulker(ender, boxSlot, inner);
+		try {
+			EscrowTake.removeAfterJournal(
+					() -> persistOffer(session, session.sideOf(player.getUUID()), held, removed, origin),
+					() -> container.setItem(boxSlot, extraction.box()));
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.error("Could not journal escrow for {}", session.id(), failure);
+			tell(player, "That stack could not be escrowed.");
+			return;
+		}
+		held.add(removed, origin);
 		session.onEscrowEdited();
 		session.touch(System.currentTimeMillis());
 		refreshBoth(session, true);
@@ -596,12 +673,14 @@ public final class TradeRuntime implements TradeActions {
 			held.add(leftover, entry.origin());
 			if (leftover.getCount() == before) {
 				tell(player, "Your inventory is full, so that stack stays in the offer.");
+				rememberJournal(session);
 				refreshBoth(session, true);
 				return;
 			}
 		}
 		session.onEscrowEdited();
 		session.touch(System.currentTimeMillis());
+		rememberJournal(session);
 		refreshBoth(session, true);
 	}
 
@@ -652,6 +731,7 @@ public final class TradeRuntime implements TradeActions {
 					spawnDrops(left, leftBags);
 					spawnDrops(right, rightBags);
 					logTerminal(session, "COMPLETED", "");
+					deleteJournal(session.id());
 					leftEscrow.clear();
 					rightEscrow.clear();
 					session.complete();
@@ -675,6 +755,7 @@ public final class TradeRuntime implements TradeActions {
 		} catch (RuntimeException failure) {
 			if (swapped) {
 				PlayerTrades.LOGGER.error("Trade {} moved items, then bookkeeping failed", session.id(), failure);
+				deleteJournal(session.id());
 				leftEscrow.clear();
 				rightEscrow.clear();
 				if (session.state() == com.vucelich.playertrades.session.TradeState.COMMITTING) {
@@ -704,8 +785,9 @@ public final class TradeRuntime implements TradeActions {
 		directory.unlink(session);
 		ServerPlayer left = server.getPlayerList().getPlayer(session.playerA());
 		ServerPlayer right = session.playerB() == null ? null : server.getPlayerList().getPlayer(session.playerB());
-		returnEscrow(session, Side.A, left, deadOrGone, deathDrop);
-		returnEscrow(session, Side.B, right, deadOrGone, deathDrop);
+		settleEscrow(session, Side.A, left, deadOrGone, deathDrop);
+		settleEscrow(session, Side.B, right, deadOrGone, deathDrop);
+		rememberJournal(session);
 		closeMenu(left);
 		closeMenu(right);
 		String message = cancelMessage(reason);
@@ -738,39 +820,104 @@ public final class TradeRuntime implements TradeActions {
 		notice(session.playerA(), session.nameA(), OfferNotice.COMPLETED);
 	}
 
-	private void returnEscrow(TradeSession session, Side side, ServerPlayer owner, ServerPlayer deadOrGone, boolean deathDrop) {
-		ItemEscrow escrow = escrow(session, side);
-		if (escrow.isEmpty()) {
+	private void settleEscrow(TradeSession session, Side side, ServerPlayer owner, ServerPlayer deadOrGone, boolean deathDrop) {
+		ItemEscrow held = escrow(session, side);
+		if (held.isEmpty()) {
 			return;
 		}
 		UUID ownerId = side == Side.A ? session.playerA() : session.playerB();
 		if (owner == null && deadOrGone != null && ownerId != null && ownerId.equals(deadOrGone.getUUID())) {
 			owner = deadOrGone;
 		}
-		boolean dropOnly = (deathDrop && owner == deadOrGone) || (owner != null && !owner.isAlive());
 		if (owner == null) {
-			ServerPlayer anchor = server.getPlayerList().getPlayer(session.playerA());
-			if (anchor == null && session.playerB() != null) {
-				anchor = server.getPlayerList().getPlayer(session.playerB());
+			return;
+		}
+		List<ItemEscrow.Entry> saved = held.copyEntries();
+		boolean dying = (deathDrop && owner == deadOrGone) || !owner.isAlive();
+		try {
+			ItemMover.giveBack(owner, held, dying && !keepsInventory(owner));
+		} catch (RuntimeException failure) {
+			if (held.isEmpty()) {
+				held.restore(saved);
 			}
-			if (anchor != null) {
-				for (ItemEscrow.Entry entry : escrow.drain()) {
-					ItemMover.drop(anchor, entry.stack());
-				}
-				return;
-			}
-			var level = server.overworld();
-			if (level == null) {
-				PlayerTrades.LOGGER.error("No world left to drop {} escrow in trade {}", side, session.id());
-				return;
-			}
-			var pos = level.getRespawnData().pos();
-			for (ItemEscrow.Entry entry : escrow.drain()) {
-				ItemMover.dropAt(level, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, entry.stack());
+			PlayerTrades.LOGGER.error("Could not return {} escrow in trade {}", side, session.id(), failure);
+		}
+	}
+
+	private static boolean keepsInventory(ServerPlayer player) {
+		if (player.level() == null) {
+			return false;
+		}
+		return Boolean.TRUE.equals(player.level().getGameRules().get(GameRules.KEEP_INVENTORY));
+	}
+
+	private void persistOffer(TradeSession session, Side side, ItemEscrow held, ItemStack extra, ItemOrigin origin) {
+		List<ItemEscrow.Entry> projected = new ArrayList<>(held.copyEntries());
+		projected.add(new ItemEscrow.Entry(extra.copy(), origin));
+		writeJournal(session, side, projected);
+	}
+
+	private void rememberJournal(TradeSession session) {
+		try {
+			writeJournal(session, null, null);
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.error("Could not update the escrow journal for {}", session.id(), failure);
+		}
+	}
+
+	private void writeJournal(TradeSession session, Side projectedSide, List<ItemEscrow.Entry> projected) {
+		List<EscrowJournal.Side> sides = new ArrayList<>();
+		appendSide(sides, session, Side.A, projectedSide == Side.A ? projected : peek(session, Side.A));
+		appendSide(sides, session, Side.B, projectedSide == Side.B ? projected : peek(session, Side.B));
+		try {
+			EscrowJournal.write(journalDir, new EscrowJournal.Page(session.id(), sides));
+		} catch (IOException failure) {
+			throw new IllegalStateException("Could not write the escrow journal", failure);
+		}
+	}
+
+	private void appendSide(List<EscrowJournal.Side> sides, TradeSession session, Side side, List<ItemEscrow.Entry> entries) {
+		UUID player = side == Side.A ? session.playerA() : session.playerB();
+		if (player == null) {
+			if (entries != null && !entries.isEmpty()) {
+				throw new IllegalStateException("Escrow has no owner");
 			}
 			return;
 		}
-		ItemMover.giveBack(owner, escrow, dropOnly);
+		List<EscrowJournal.Line> lines = EscrowCodecs.encode(server, entries);
+		if (!lines.isEmpty()) {
+			sides.add(new EscrowJournal.Side(player, lines));
+		}
+	}
+
+	private List<ItemEscrow.Entry> peek(TradeSession session, Side side) {
+		ItemEscrow stored = (side == Side.A ? escrowA : escrowB).get(session.id());
+		if (stored == null) {
+			return List.of();
+		}
+		return stored.copyEntries();
+	}
+
+	private void deleteJournal(UUID sessionId) {
+		try {
+			EscrowJournal.delete(journalDir, sessionId);
+		} catch (IOException failure) {
+			PlayerTrades.LOGGER.error("Could not delete the escrow journal for {}", sessionId, failure);
+		}
+	}
+
+	private boolean liveEscrow(UUID sessionId) {
+		return escrowA.containsKey(sessionId) || escrowB.containsKey(sessionId) || directory.tradeById(sessionId).isPresent();
+	}
+
+	private static List<EscrowJournal.Side> sidesFor(EscrowJournal.Page page, UUID player) {
+		List<EscrowJournal.Side> sides = new ArrayList<>();
+		for (EscrowJournal.Side side : page.sides()) {
+			if (player.equals(side.player()) && !side.lines().isEmpty()) {
+				sides.add(side);
+			}
+		}
+		return sides;
 	}
 
 	private static List<IncomingStack> incoming(ItemEscrow escrow) {
@@ -1096,8 +1243,40 @@ public final class TradeRuntime implements TradeActions {
 	}
 
 	private boolean blacklisted(ItemStack stack) {
+		if (stack == null || stack.isEmpty()) {
+			return false;
+		}
+		return BlacklistWalk.rejects(blacklist, describe(stack, 0));
+	}
+
+	private BlacklistWalk.Held describe(ItemStack stack, int depth) {
 		Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-		return id != null && blacklist.rejects(id.toString());
+		String key = id == null ? "" : id.toString();
+		if (depth > BlacklistWalk.MAX_DEPTH) {
+			return new BlacklistWalk.Held(key, List.of(), List.of());
+		}
+		return new BlacklistWalk.Held(key, nested(stack.get(DataComponents.CONTAINER), depth), nested(stack.get(DataComponents.BUNDLE_CONTENTS), depth));
+	}
+
+	private List<BlacklistWalk.Held> nested(ItemContainerContents contents, int depth) {
+		return nestedCopies(contents == null ? null : contents.itemCopies(), depth);
+	}
+
+	private List<BlacklistWalk.Held> nested(BundleContents contents, int depth) {
+		return nestedCopies(contents == null ? null : contents.itemCopies(), depth);
+	}
+
+	private List<BlacklistWalk.Held> nestedCopies(java.util.stream.Stream<ItemStack> copies, int depth) {
+		if (copies == null) {
+			return List.of();
+		}
+		List<BlacklistWalk.Held> children = new ArrayList<>();
+		copies.forEach(inner -> {
+			if (inner != null && !inner.isEmpty()) {
+				children.add(describe(inner, depth + 1));
+			}
+		});
+		return children;
 	}
 
 	private ItemBlacklist resolve(List<String> raw) {

@@ -33,6 +33,7 @@ public final class TradeEvents {
 					current.execute(task);
 				}
 			}));
+			runtime.replayOnline();
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			if (runtime != null) {
@@ -63,6 +64,11 @@ public final class TradeEvents {
 				return;
 			}
 			runtime.relayChat(player, trimmed);
+		});
+		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+			if (runtime != null) {
+				runtime.onJoin(handler.getPlayer());
+			}
 		});
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
 			if (runtime != null) {
