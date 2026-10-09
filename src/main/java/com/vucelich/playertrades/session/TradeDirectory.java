@@ -17,11 +17,15 @@ public final class TradeDirectory {
 	private final Map<UUID, TradeSession> sessions = new HashMap<>();
 
 	public PostResult postOffer(UUID player, String name, String text, long nowMillis) {
+		return postOffer(player, name, text, nowMillis, com.vucelich.playertrades.TradeLimits.OFFER_TTL_MILLIS);
+	}
+
+	public PostResult postOffer(UUID player, String name, String text, long nowMillis, long ttlMillis) {
 		if (sessions.containsKey(player)) {
 			return PostResult.rejected(OfferProblem.IN_SESSION);
 		}
 		boolean replaced = offers.containsKey(player);
-		TradeSession session = TradeSession.offer(player, name, text, nowMillis);
+		TradeSession session = TradeSession.offer(player, name, text, nowMillis, ttlMillis);
 		offers.put(player, session);
 		return PostResult.posted(session, replaced);
 	}
