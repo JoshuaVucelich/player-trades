@@ -840,11 +840,31 @@ public final class TradeRuntime implements TradeActions {
 		return new ItemBlacklist(accepted);
 	}
 
-	private static void spawnDrops(ServerPlayer player, PlayerStorage bags) {
+	private void spawnDrops(ServerPlayer player, PlayerStorage bags) {
 		for (Object drop : bags.drainDrops()) {
-			if (drop instanceof ItemStack stack) {
-				ItemMover.drop(player, stack);
+			if (drop instanceof ItemStack stack && !stack.isEmpty()) {
+				spawnOne(player, stack);
 			}
+		}
+	}
+
+	private void spawnOne(ServerPlayer player, ItemStack stack) {
+		try {
+			ItemMover.drop(player, stack);
+			return;
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.error("Could not drop a trade stack at the player, retrying at spawn", failure);
+		}
+		try {
+			var level = server.overworld();
+			if (level == null) {
+				PlayerTrades.LOGGER.error("No world left for a trade drop of {}", stack);
+				return;
+			}
+			var pos = level.getRespawnData().pos();
+			ItemMover.dropAt(level, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, stack);
+		} catch (RuntimeException failure) {
+			PlayerTrades.LOGGER.error("Could not drop a trade stack at spawn: {}", stack, failure);
 		}
 	}
 }
