@@ -1,6 +1,7 @@
 package com.vucelich.playertrades.escrow;
 
 import com.vucelich.playertrades.TradeLimits;
+import com.vucelich.playertrades.config.Overflow;
 
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -26,26 +27,82 @@ public final class ItemMover {
 
 	public static void giveBack(ServerPlayer player, ItemEscrow escrow, boolean dropOnly) {
 		for (ItemEscrow.Entry entry : escrow.drain()) {
-			ItemStack stack = entry.stack();
-			if (stack.isEmpty()) {
-				continue;
-			}
-			if (!dropOnly) {
-				Inventory inventory = player.getInventory();
-				int origin = entry.origin();
-				if (origin >= 0 && origin < storageLimit(inventory) && inventory.getItem(origin).isEmpty()) {
-					inventory.setItem(origin, stack);
-					continue;
-				}
-				stack = insertStorage(inventory, stack);
-				if (!stack.isEmpty()) {
-					stack = insertContainer(player.getEnderChestInventory(), stack, 27);
-				}
-			}
-			if (!stack.isEmpty()) {
-				drop(player, stack);
+			ItemStack leftover = place(player, entry.origin(), entry.stack(), dropOnly, true);
+			if (!leftover.isEmpty()) {
+				drop(player, leftover);
 			}
 		}
+	}
+
+	/**
+	 * @return whatever could not be placed. Empty when the stack has a home, including a drop when drops are allowed.
+	 */
+	public static ItemStack place(ServerPlayer player, ItemOrigin origin, ItemStack stack, boolean dropOnly, boolean allowDrop) {
+		if (stack.isEmpty()) {
+			return ItemStack.EMPTY;
+		}
+		if (dropOnly) {
+			drop(player, stack);
+			return ItemStack.EMPTY;
+		}
+		stack = placeAtOrigin(player, origin, stack);
+		if (!stack.isEmpty()) {
+			stack = insertStorage(player.getInventory(), stack);
+		}
+		if (!stack.isEmpty()) {
+			stack = insertContainer(player.getEnderChestInventory(), stack, 27);
+		}
+		if (!stack.isEmpty() && allowDrop) {
+			drop(player, stack);
+			return ItemStack.EMPTY;
+		}
+		return stack;
+	}
+
+	public static boolean allowDrop(Overflow overflow) {
+		return overflow == Overflow.ENDER_THEN_DROP;
+	}
+
+	private static ItemStack placeAtOrigin(ServerPlayer player, ItemOrigin origin, ItemStack stack) {
+		if (origin == null) {
+			return stack;
+		}
+		Inventory inventory = player.getInventory();
+		return switch (origin.kind()) {
+			case INVENTORY -> {
+				if (origin.slot() >= 0 && origin.slot() < storageLimit(inventory) && inventory.getItem(origin.slot()).isEmpty()) {
+					inventory.setItem(origin.slot(), stack);
+					yield ItemStack.EMPTY;
+				}
+				yield stack;
+			}
+			case ENDER -> insertContainer(player.getEnderChestInventory(), preferSlot(player.getEnderChestInventory(), origin.slot(), stack), 27);
+			case SHULKER_INVENTORY -> insertIntoBox(inventory, origin.slot(), stack);
+			case SHULKER_ENDER -> insertIntoBox(player.getEnderChestInventory(), origin.slot(), stack);
+		};
+	}
+
+	private static ItemStack preferSlot(Container container, int slot, ItemStack stack) {
+		if (slot >= 0 && slot < container.getContainerSize() && container.getItem(slot).isEmpty()) {
+			container.setItem(slot, stack);
+			return ItemStack.EMPTY;
+		}
+		return stack;
+	}
+
+	private static ItemStack insertIntoBox(Container container, int slot, ItemStack stack) {
+		if (slot < 0 || slot >= container.getContainerSize()) {
+			return stack;
+		}
+		ItemStack box = container.getItem(slot);
+		if (!ShulkerBoxes.isBox(box)) {
+			return stack;
+		}
+		ShulkerBoxes.PlaceResult placed = ShulkerBoxes.insert(box, stack);
+		if (placed.box() != box) {
+			container.setItem(slot, placed.box());
+		}
+		return placed.leftover().isEmpty() ? ItemStack.EMPTY : placed.leftover();
 	}
 
 	public static void drop(ServerPlayer player, ItemStack stack) {

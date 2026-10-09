@@ -19,7 +19,11 @@ public final class TradeMenu extends ChestMenu {
 	private final UUID viewerId;
 	private final TradeActions actions;
 	private final SimpleContainer display;
+	private SourceTab tab = SourceTab.INVENTORY;
 	private int page;
+	private int pageCount = TradeLayout.PAGES;
+	private int focusSlot = -1;
+	private boolean focusEnder;
 	private boolean closeHandled;
 
 	public TradeMenu(int syncId, Inventory playerInventory, UUID viewerId, TradeActions actions) {
@@ -42,8 +46,47 @@ public final class TradeMenu extends ChestMenu {
 		return page;
 	}
 
+	public SourceTab tab() {
+		return tab;
+	}
+
+	public int focusSlot() {
+		return focusSlot;
+	}
+
+	public boolean focusEnder() {
+		return focusEnder;
+	}
+
+	public void showInventory() {
+		tab = SourceTab.INVENTORY;
+		page = 0;
+	}
+
+	public void showEnder() {
+		tab = SourceTab.ENDER;
+		page = 0;
+	}
+
+	public void showPicker() {
+		tab = SourceTab.PICKER;
+		page = 0;
+	}
+
+	public void showContents(int slot, boolean ender) {
+		tab = SourceTab.CONTENTS;
+		page = 0;
+		focusSlot = slot;
+		focusEnder = ender;
+	}
+
+	public void setPageCount(int pageCount) {
+		this.pageCount = Math.max(1, pageCount);
+		this.page = TradeLayout.clampPage(page, this.pageCount);
+	}
+
 	public void setPage(int page) {
-		this.page = TradeLayout.clampPage(page);
+		this.page = TradeLayout.clampPage(page, pageCount);
 	}
 
 	public Container display() {

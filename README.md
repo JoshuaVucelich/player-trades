@@ -2,7 +2,7 @@
 
 Server-side Fabric mod for player-to-player item trades on a Minecraft Java **26.3** dedicated server. Java players and Bedrock players (Geyser/Floodgate) use the same vanilla chest screen. There is no client mod and no custom client UI.
 
-Milestone 1 is implemented: offers, a vanilla chest trade screen, ready and countdown, and an inventory-only atomic swap. Shulker tabs, the trade log, and Discord are still ahead. See [docs/MILESTONES.md](docs/MILESTONES.md) and [docs/DESIGN.md](docs/DESIGN.md).
+Milestone 2 is implemented: the chest screen can offer inventory stacks, ender chest stacks, and the contents of a shulker in either place. Config lives in `config/player_trades.json` (see `config/player_trades.example.json`). A full inventory overflows into the ender chest, then drops at the player's feet. The trade log and Discord bridge are still ahead. See [docs/MILESTONES.md](docs/MILESTONES.md) and [docs/DESIGN.md](docs/DESIGN.md).
 
 ```
 /trade offer [text]

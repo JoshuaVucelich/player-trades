@@ -6,7 +6,7 @@ import java.util.List;
 import net.minecraft.world.item.ItemStack;
 
 public final class ItemEscrow {
-	public record Entry(ItemStack stack, int origin) {}
+	public record Entry(ItemStack stack, ItemOrigin origin) {}
 
 	private final List<Entry> entries = new ArrayList<>();
 
@@ -22,12 +22,25 @@ public final class ItemEscrow {
 		return entries.get(index).stack();
 	}
 
-	public void add(ItemStack stack, int origin) {
+	public Entry entry(int index) {
+		return entries.get(index);
+	}
+
+	public void add(ItemStack stack, ItemOrigin origin) {
 		entries.add(new Entry(stack, origin));
 	}
 
 	public Entry remove(int index) {
 		return entries.remove(index);
+	}
+
+	public boolean holdsContentsOf(ItemOrigin box) {
+		for (Entry entry : entries) {
+			if (box.sameBox(entry.origin())) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public List<Entry> drain() {
